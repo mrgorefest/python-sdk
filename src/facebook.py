@@ -1,42 +1,4 @@
-#!/usr/bin/env python
-#
-# Copyright 2010 Facebook
-#
-# Licensed under the Apache License, Version 2.0 (the "License"); you may
-# not use this file except in compliance with the License. You may obtain
-# a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
-"""Python client library for the Facebook Platform.
-
-This client library is designed to support the Graph API and the official
-Facebook JavaScript SDK, which is the canonical way to implement
-Facebook authentication. Read more about the Graph API at
-http://developers.facebook.com/docs/api. You can download the Facebook
-JavaScript SDK at http://github.com/facebook/connect-js/.
-
-If your application is using Google AppEngine's webapp framework, your
-usage of this module might look like this:
-
-    user = facebook.get_user_from_cookie(self.request.cookies, key, secret)
-    if user:
-        graph = facebook.GraphAPI(user["access_token"])
-        profile = graph.get_object("me")
-        friends = graph.get_connections("me", "friends")
-
-"""
-
-import cgi
-import hashlib
-import time
-import urllib
+from google.appengine.api import urlfetch
 
 # Find a JSON parser
 try:
@@ -50,165 +12,255 @@ except ImportError:
         # For Google AppEngine
         from django.utils import simplejson
         _parse_json = lambda s: simplejson.loads(s)
-
-
-class GraphAPI(object):
-    """A client for the Facebook Graph API.
-
-    See http://developers.facebook.com/docs/api for complete documentation
-    for the API.
-
-    The Graph API is made up of the objects in Facebook (e.g., people, pages,
-    events, photos) and the connections between them (e.g., friends,
-    photo tags, and event RSVPs). This client provides access to those
-    primitive types in a generic way. For example, given an OAuth access
-    token, this will fetch the profile of the active user and the list
-    of the user's friends:
-
-       graph = facebook.GraphAPI(access_token)
-       user = graph.get_object("me")
-       friends = graph.get_connections(user["id"], "friends")
-
-    You can see a list of all of the objects and connections supported
-    by the API at http://developers.facebook.com/docs/reference/api/.
-
-    You can obtain an access token via OAuth or by using the Facebook
-    JavaScript SDK. See http://developers.facebook.com/docs/authentication/
-    for details.
-
-    If you are using the JavaScript SDK, you can use the
-    get_user_from_cookie() method below to get the OAuth access token
-    for the active user from the cookie saved by the SDK.
-    """
-    def __init__(self, access_token=None):
-        self.access_token = access_token
-
-    def get_object(self, id, **args):
-        """Fetchs the given object from the graph."""
-        return self.request(id, args)
-
-    def get_objects(self, ids, **args):
-        """Fetchs all of the given object from the graph.
-
-        We return a map from ID to object. If any of the IDs are invalid,
-        we raise an exception.
-        """
-        args["ids"] = ",".join(ids)
-        return self.request("", args)
-
-    def get_connections(self, id, connection_name, **args):
-        """Fetchs the connections for given object."""
-        return self.request(id + "/" + connection_name, args)
-
-    def put_object(self, parent_object, connection_name, **data):
-        """Writes the given object to the graph, connected to the given parent.
-
-        For example,
-
-            graph.put_object("me", "feed", message="Hello, world")
-
-        writes "Hello, world" to the active user's wall. Likewise, this
-        will comment on a the first post of the active user's feed:
-
-            feed = graph.get_connections("me", "feed")
-            post = feed["data"][0]
-            graph.put_object(post["id"], "comments", message="First!")
-
-        See http://developers.facebook.com/docs/api#publishing for all of
-        the supported writeable objects.
-
-        Most write operations require extended permissions. For example,
-        publishing wall posts requires the "publish_stream" permission. See
-        http://developers.facebook.com/docs/authentication/ for details about
-        extended permissions.
-        """
-        assert self.access_token, "Write operations require an access token"
-        return self.request(parent_object + "/" + connection_name, post_args=data)
-
-    def put_wall_post(self, message, attachment={}, profile_id="me"):
-        """Writes a wall post to the given profile's wall.
-
-        We default to writing to the authenticated user's wall if no
-        profile_id is specified.
-
-        attachment adds a structured attachment to the status message being
-        posted to the Wall. It should be a dictionary of the form:
-
-            {"name": "Link name"
-             "link": "http://www.example.com/",
-             "caption": "{*actor*} posted a new review",
-             "description": "This is a longer description of the attachment",
-             "picture": "http://www.example.com/thumbnail.jpg"}
-
-        """
-        return self.put_object(profile_id, "feed", message=message, **attachment)
-
-    def put_comment(self, object_id, message):
-        """Writes the given comment on the given post."""
-        return self.put_object(object_id, "comments", message=message)
-
-    def put_like(self, object_id):
-        """Likes the given post."""
-        return self.put_object(object_id, "likes")
-
-    def delete_object(self, id):
-        """Deletes the object with the given ID from the graph."""
-        self.request(id, post_args={"method": "delete"})
-
-    def request(self, path, args=None, post_args=None):
-        """Fetches the given path in the Graph API.
-
-        We translate args to a valid query string. If post_args is given,
-        we send a POST request to the given path with the given arguments.
-        """
-        if not args: args = {}
-        if self.access_token:
-            if post_args is not None:
-                post_args["access_token"] = self.access_token
-            else:
-                args["access_token"] = self.access_token
-        post_data = None if post_args is None else urllib.urlencode(post_args)
-        file = urllib.urlopen("https://graph.facebook.com/" + path + "?" +
-                              urllib.urlencode(args), post_data)
-        try:
-            response = _parse_json(file.read())
-        finally:
-            file.close()
-        if response.get("error"):
-            raise GraphAPIError(response["error"]["type"],
-                                response["error"]["message"])
-        return response
-
-
-class GraphAPIError(Exception):
-    def __init__(self, type, message):
-        Exception.__init__(self, message)
-        self.type = type
-
-
-def get_user_from_cookie(cookies, app_id, app_secret):
-    """Parses the cookie set by the official Facebook JavaScript SDK.
-
-    cookies should be a dictionary-like object mapping cookie names to
-    cookie values.
-
-    If the user is logged in via Facebook, we return a dictionary with the
-    keys "uid" and "access_token". The former is the user's Facebook ID,
-    and the latter can be used to make authenticated requests to the Graph API.
-    If the user is not logged in, we return None.
-
-    Download the official Facebook JavaScript SDK at
-    http://github.com/facebook/connect-js/. Read more about Facebook
-    authentication at http://developers.facebook.com/docs/authentication/.
-    """
-    cookie = cookies.get("fbs_" + app_id, "")
-    if not cookie: return None
-    args = dict((k, v[-1]) for k, v in cgi.parse_qs(cookie.strip('"')).items())
-    payload = "".join(k + "=" + args[k] for k in sorted(args.keys())
-                      if k != "sig")
-    sig = hashlib.md5(payload + app_secret).hexdigest()
-    expires = int(args["expires"])
-    if sig == args.get("sig") and (expires == 0 or time.time() < expires):
-        return args
+        
+def isset(var): #TODO: change with this: http://www.php2python.com/wiki/function.isset/
+    try:
+        (lambda x: x)(var)
+    except NameError:
+        return False
     else:
-        return None
+        return True
+def is_array(var):
+    return isinstance(var, (list, tuple))
+def is_string(obj):
+    return isinstance(obj, basestring)
+        
+        
+class FacebookApiException(Exception):
+    __result = None
+    def __init__(self, result):
+        self.result = result
+        code = result['error_code'] if isset(result['error_code']) else 0
+        if isset(result['error_description']):
+            msg = result['error_description']
+        elif (isset(result['error']) and is_array(result['error'])):
+            msg = result['error']['message']
+        elif isset(result['error_msg']):
+            msg = result['error_msg']
+        else:
+            msg = 'Unknown Error. Check getResult()'
+    def getResult(self):
+        return self.result
+    def getType(self):
+        if isset(self.result['error']):
+            error = self.result['error']
+            if is_string(error):
+            # OAuth 2.0 Draft 10 style
+                return error
+            elif is_array(error):
+            # OAuth 2.0 Draft 00 style
+                if isset(error['type']):
+                    return error['type']
+
+        return 'Exception'
+    def toString(self):
+        str = self.getType() + ': '
+        if self.code != 0:
+            str += self.code + ': '
+        return str + self.message
+
+class Facebook:   
+    VERSION = '2.1.2'
+    '''
+      /**
+   * Default options for curl.
+   */
+  public static CURL_OPTS = array(
+    CURLOPT_CONNECTTIMEOUT => 10,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_TIMEOUT        => 60,
+    CURLOPT_USERAGENT      => 'facebook-php-2.0',
+  )
+
+  /**
+       * List of query parameters that get automatically dropped when rebuilding
+       * the current URL.
+   '''
+    DROP_QUERY_PARAMS = [
+                         'session',
+                         'signed_request',
+                        ]
+
+    '''
+       * Maps aliases to Facebook domains.
+   '''
+    DOMAIN_MAP = {
+                 'api' : 'https://api.facebook.com/',
+                 'api_read' : 'https://api-read.facebook.com/',
+                 'graph'    : 'https://graph.facebook.com/',
+                 'www'      : 'https://www.facebook.com/',
+                 }
+
+    '''
+       * The Application ID.
+   '''
+    appId = None
+
+    '''
+       * The Application API Secret.
+   '''
+    apiSecret = None
+
+    '''
+       * The active user session, if one is available.
+  '''
+    session = None
+
+    '''
+       * The data from the signed_request token.
+   '''
+    signedRequest = None
+
+    '''
+       * Indicates that we already loaded the session as best as we could.
+   '''
+    sessionLoaded = False
+
+    '''
+       * Indicates if Cookie support should be enabled.
+   '''
+    cookieSupport = False
+
+    '''
+       * Base domain for the Cookie.
+   '''
+    baseDomain = ''
+
+    '''
+       * Indicates if the CURL based @ syntax for file uploads is enabled.
+   '''
+    fileUploadSupport = False
+
+    '''
+       * Initialize a Facebook Application.
+       *
+       * The configuration:
+       * - appId: the application ID
+       * - secret: the application secret
+       * - cookie: (optional) boolean true to enable cookie support
+       * - domain: (optional) domain for the cookie
+       * - fileUpload: (optional) boolean indicating if file uploads are enabled
+       *
+       * @param Array config the application configuration
+       */
+   '''
+    def __init__(self, config):
+        self.setAppId(config['appId'])
+        self.setApiSecret(config['secret'])
+        if isset(config['cookie']):
+            self.setCookieSupport(config['cookie'])
+        if isset(config['domain']):
+            self.setBaseDomain(config['domain'])
+        if isset(config['fileUpload']):
+            self.setFileUploadSupport(config['fileUpload'])
+        
+    '''
+       * Set the Application ID.
+       *
+       * @param String appId the Application ID
+    '''
+    def setAppId(self, appId):
+        self.appId = appId
+        return self
+    
+    '''
+       * Get the Application ID.
+       *
+       * @return String the Application ID
+    '''
+    def getAppId(self):
+        return self.appId
+
+    '''
+       * Set the API Secret.
+       *
+       * @param String appId the API Secret
+    '''
+    def setApiSecret(self, apiSecret):
+        self.apiSecret = apiSecret
+        return self
+
+    '''
+       * Get the API Secret.
+       *
+       * @return String the API Secret
+    '''
+    def getApiSecret(self):
+        return self.apiSecret
+    
+    '''
+       * Set the Cookie Support status.
+       *
+       * @param Boolean cookieSupport the Cookie Support status
+    '''
+    def setCookieSupport(self, cookieSupport):
+        self.cookieSupport = cookieSupport
+        return self
+
+    '''
+       * Get the Cookie Support status.
+       *
+       * @return Boolean the Cookie Support status
+    '''
+    def useCookieSupport(self):
+        return self.cookieSupport
+    
+    '''
+       * Set the base domain for the Cookie.
+       *
+       * @param String domain the base domain
+    '''
+    def setBaseDomain(self, domain):
+        self.baseDomain = domain
+        return self
+
+    '''
+       * Get the base domain for the Cookie.
+       *
+       * @return String the base domain
+    '''
+    def getBaseDomain(self):
+        return self.baseDomain
+
+    '''
+       * Set the file upload support status.
+       *
+       * @param String domain the base domain
+    '''
+    def setFileUploadSupport(self, fileUploadSupport):
+        self.fileUploadSupport = fileUploadSupport
+        return self
+    
+    '''
+       * Get the file upload support status.
+       *
+       * @return String the base domain
+    '''
+    def useFileUploadSupport(self):
+        return self.fileUploadSupport
+
+    '''
+       * Get the data from a signed_request token
+       *
+       * @return String the base domain
+    '''
+    def getSignedRequest(self):
+        if not self.signedRequest:
+            if isset($_REQUEST['signed_request']): #TODO: $_REQUEST
+                self.signedRequest = self.parseSignedRequest($_REQUEST['signed_request'])  #TODO: $_REQUEST
+        return self.signedRequest
+
+    '''
+        * Set the Session.
+        *
+        * @param Array session the session
+        * @param Boolean write_cookie indicate if a cookie should be written. this
+        * value is ignored if cookie support has been disabled.
+    '''
+    def setSession(self, session=None, write_cookie=True):
+        session = self.validateSessionObject(session)
+        self.sessionLoaded = true
+        self.session = session
+        if (write_cookie):
+            self.setCookieFromSession(session)
+        return self
